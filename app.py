@@ -1,10 +1,10 @@
 """
-Streamlit App: AI Topic & Content Generator (Dynamic DeepSeek API)
+Streamlit App: AI Topic & Content Generator (OpenRouter API Ready)
 
 Features:
 - Input niche, number of topics, script word count.
-- Allows user to enter their DeepSeek API key dynamically in the UI.
-- Uses DeepSeek API to generate:
+- User can dynamically enter their OpenRouter API key in the UI.
+- Uses OpenRouter API to generate:
    * Topic ideas
    * Script (word-limited)
    * SEO pack (titles, description, keywords, tags, hashtags)
@@ -25,20 +25,20 @@ import time
 import hashlib
 
 # ---------------- Helpers ----------------
-def call_deepseek(prompt: str, api_key: str, max_tokens: int = 512, temperature: float = 0.7):
+def call_openrouter(prompt: str, api_key: str, model: str = "openrouter-gpt-4", max_tokens: int = 512, temperature: float = 0.7):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": temperature
+        "temperature": temperature,
+        "max_tokens": max_tokens
     }
-    resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
+    resp = requests.post("https://api.openrouter.ai/v1/chat/completions", headers=headers, json=payload, timeout=60)
     if resp.status_code != 200:
-        raise RuntimeError(f"DeepSeek API error {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"OpenRouter API error {resp.status_code}: {resp.text}")
     data = resp.json()
     return data["choices"][0]["message"]["content"].strip()
 
@@ -73,22 +73,23 @@ def prompt_thumbnails(topic):
 
 # ---------------- Streamlit UI ----------------
 st.set_page_config(page_title="AI Topic Tool", layout="wide")
-st.title("🎥 AI Topic, Script & SEO Generator (DeepSeek API)")
+st.title("🎥 AI Topic, Script & SEO Generator (OpenRouter API)")
 
 with st.sidebar:
     st.header("⚙️ Settings")
     niche = st.text_input("Enter niche", "fitness for beginners")
     num_topics = st.number_input("Number of topics", 1, 20, 5)
     words = st.number_input("Words per script", 100, 2000, 300)
-    api_key = st.text_input("Enter DeepSeek API Key", type="password")
+    api_key = st.text_input("Enter OpenRouter API Key", type="password")
+    model_name = st.text_input("Model Name", "openrouter-gpt-4")
     run_btn = st.button("🚀 Generate")
 
 if run_btn and niche and api_key:
-    with st.spinner("Generating with DeepSeek AI..."):
+    with st.spinner("Generating with OpenRouter AI..."):
         output = {"niche": niche, "generated_at": time.ctime(), "topics": []}
 
         # 1) Generate topics
-        raw_topics = call_deepseek(prompt_topics(niche, num_topics), api_key, 256)
+        raw_topics = call_openrouter(prompt_topics(niche, num_topics), api_key, model=model_name, max_tokens=256)
         topics = [line.split(".", 1)[-1].strip() if line[0].isdigit() else line for line in raw_topics.splitlines() if line.strip()]
         topics = topics[:num_topics]
 
@@ -96,18 +97,18 @@ if run_btn and niche and api_key:
         for t in topics:
             entry = {"topic": t}
             try:
-                script_raw = call_deepseek(prompt_script(t, words), api_key, max_tokens=800)
+                script_raw = call_openrouter(prompt_script(t, words), api_key, model=model_name, max_tokens=800)
                 entry["script"] = approx_trim(script_raw, words)
             except Exception as e:
                 entry["script"] = f"[Error: {e}]"
 
             try:
-                entry["seo"] = call_deepseek(prompt_seo(t), api_key, max_tokens=1000)
+                entry["seo"] = call_openrouter(prompt_seo(t), api_key, model=model_name, max_tokens=1000)
             except Exception as e:
                 entry["seo"] = f"[Error: {e}]"
 
             try:
-                entry["thumbnails"] = call_deepseek(prompt_thumbnails(t), api_key, max_tokens=400)
+                entry["thumbnails"] = call_openrouter(prompt_thumbnails(t), api_key, model=model_name, max_tokens=400)
             except Exception as e:
                 entry["thumbnails"] = f"[Error: {e}]"
 
