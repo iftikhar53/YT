@@ -1,53 +1,141 @@
+"""
+Streamlit App: AI Topic & Content Generator (Dynamic DeepSeek API)
+
+Features:
+- Input niche, number of topics, script word count.
+- Allows user to enter their DeepSeek API key dynamically in the UI.
+- Uses DeepSeek API to generate:
+   * Topic ideas
+   * Script (word-limited)
+   * SEO pack (titles, description, keywords, tags, hashtags)
+   * Thumbnail prompts
+- UI-based output in Streamlit
+- Download results as JSON or Markdown
+
+Setup:
+1. Save this file as `app.py` in a GitHub repo.
+2. Install dependencies: `pip install streamlit requests`
+3. Run with: `streamlit run app.py`
+"""
+
 import streamlit as st
-import pandas as pd
-from youtubesearchpython import VideosSearch
-import random
+import requests
+import json
+import time
+import hashlib
 
-# Function to find topics
-def find_topics(niche, num_topics=10):
-    videos = VideosSearch(niche, limit=50).result()["result"]
+# ---------------- Helpers ----------------
+def call_deepseek(prompt: str, api_key: str, max_tokens: int = 512, temperature: float = 0.7):
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }
+    resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"DeepSeek API error {resp.status_code}: {resp.text}")
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
 
-    topic_list = []
-    for v in videos:
-        title = v["title"]
-        views_text = v.get("viewCount", {}).get("text", "0 views")
-        views = int(views_text.replace("views", "").replace(",", "").strip()) if views_text else 0
-        duration = v.get("duration", "0:00")
 
-        # CTR score (proxy: title length + random boost)
-        ctr_score = len(title.split()) + random.randint(1, 5)
+def slugify(text: str) -> str:
+    return "".join(c if c.isalnum() else "-" for c in text.lower()).strip("-")
 
-        # AVD score (proxy: video duration length)
-        avd_score = len(duration.split(":"))  
 
-        topic_list.append({
-            "Title": title,
-            "Views": views,
-            "Duration": duration,
-            "CTR_Score": ctr_score,
-            "AVD_Score": avd_score,
-            "Total_Score": ctr_score + avd_score
-        })
+def approx_trim(text: str, word_target: int) -> str:
+    words = text.split()
+    return " ".join(words[:word_target]) if len(words) > word_target else text
 
-    # Sort by CTR + AVD combined
-    sorted_topics = sorted(topic_list, key=lambda x: x["Total_Score"], reverse=True)
+# ---------------- Prompt Templates ----------------
+def prompt_topics(niche, n):
+    return f"Generate {n} unique, clickable video topic ideas for niche: '{niche}'. Return as a numbered list only."
 
-    return pd.DataFrame(sorted_topics[:num_topics])
+def prompt_script(topic, words):
+    return f"Write a {words}-word YouTube narration script on: '{topic}'. Conversational tone, intro, body, conclusion."
 
+def prompt_seo(topic):
+    return (
+        f"For topic '{topic}', generate an SEO pack:\n"
+        "1) 3-5 YouTube titles (under 70 chars)\n"
+        "2) Short description (under 150 chars)\n"
+        "3) Long description (200-300 words)\n"
+        "4) 100 keywords (comma-separated)\n"
+        "5) 50 hashtags (space-separated)\n"
+    )
+
+def prompt_thumbnails(topic):
+    return f"Give 6 short AI thumbnail prompts for topic: '{topic}', cinematic style, 16:9 aspect ratio."
 
 # ---------------- Streamlit UI ----------------
-st.title("🎯 YouTube High CTR & AVD Topic Finder")
-st.write("Find viral video topics in your selected niche")
+st.set_page_config(page_title="AI Topic Tool", layout="wide")
+st.title("🎥 AI Topic, Script & SEO Generator (DeepSeek API)")
 
-# User Inputs
-niche = st.text_input("Enter your niche/keyword:", "India vs USA geopolitics")
-num_topics = st.number_input("How many topics do you want?", min_value=5, max_value=50, value=10)
+with st.sidebar:
+    st.header("⚙️ Settings")
+    niche = st.text_input("Enter niche", "fitness for beginners")
+    num_topics = st.number_input("Number of topics", 1, 20, 5)
+    words = st.number_input("Words per script", 100, 2000, 300)
+    api_key = st.text_input("Enter DeepSeek API Key", type="password")
+    run_btn = st.button("🚀 Generate")
 
-if st.button("Find Topics"):
-    df = find_topics(niche, num_topics)
-    st.success("✅ Topics Found!")
-    st.dataframe(df)
+if run_btn and niche and api_key:
+    with st.spinner("Generating with DeepSeek AI..."):
+        output = {"niche": niche, "generated_at": time.ctime(), "topics": []}
 
-    # Download CSV
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download as CSV", csv, "youtube_topics.csv", "text/csv")
+        # 1) Generate topics
+        raw_topics = call_deepseek(prompt_topics(niche, num_topics), api_key, 256)
+        topics = [line.split(".", 1)[-1].strip() if line[0].isdigit() else line for line in raw_topics.splitlines() if line.strip()]
+        topics = topics[:num_topics]
+
+        # 2) For each topic generate content
+        for t in topics:
+            entry = {"topic": t}
+            try:
+                script_raw = call_deepseek(prompt_script(t, words), api_key, max_tokens=800)
+                entry["script"] = approx_trim(script_raw, words)
+            except Exception as e:
+                entry["script"] = f"[Error: {e}]"
+
+            try:
+                entry["seo"] = call_deepseek(prompt_seo(t), api_key, max_tokens=1000)
+            except Exception as e:
+                entry["seo"] = f"[Error: {e}]"
+
+            try:
+                entry["thumbnails"] = call_deepseek(prompt_thumbnails(t), api_key, max_tokens=400)
+            except Exception as e:
+                entry["thumbnails"] = f"[Error: {e}]"
+
+            output["topics"].append(entry)
+
+    # ---------------- Display ----------------
+    st.success("✅ Generation Complete!")
+
+    for idx, t in enumerate(output["topics"], 1):
+        with st.expander(f"📌 Topic {idx}: {t['topic']}"):
+            st.subheader("Script")
+            st.write(t["script"])
+            st.subheader("SEO Pack")
+            st.text(t["seo"])
+            st.subheader("Thumbnail Prompts")
+            st.text(t["thumbnails"])
+
+    # ---------------- Download Buttons ----------------
+    st.download_button(
+        "⬇️ Download JSON",
+        data=json.dumps(output, ensure_ascii=False, indent=2),
+        file_name=f"{slugify(niche)}_output.json",
+        mime="application/json"
+    )
+
+    st.download_button(
+        "⬇️ Download Markdown",
+        data="\n\n".join([f"# {t['topic']}\n\n## Script\n{t['script']}\n\n## SEO\n{t['seo']}\n\n## Thumbnails\n{t['thumbnails']}" for t in output['topics']]),
+        file_name=f"{slugify(niche)}_output.md",
+        mime="text/markdown"
+    )
